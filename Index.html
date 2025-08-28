@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{ --bg:#0f1115; --card:#171a21; --text:#eef2ff; --muted:#9aa3b2; --acc:#8ab4ff; --border:#232938; }
+    *{box-sizing:border-box}
+    body{margin:0; font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:var(--bg); color:var(--text)}
+    .wrap{max-width:720px;margin:0 auto;padding:28px}
+    .card{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:22px; box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    h1{font-size:20px;margin:0 0 12px}
+    p{color:var(--muted);margin:0 0 16px}
+    label{display:block;margin:10px 0 6px;color:var(--muted);font-size:13px}
+    input,button{width:100%;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0d1016;color:var(--text)}
+    .row{display:grid;grid-template-columns:1fr auto;gap:10px}
+    .btn{background:linear-gradient(180deg,#2b62ff,#2753d7); border:0; font-weight:700; cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .status{min-height:22px;color:var(--muted);font-size:13px;margin-top:10px}
+    .hint{font-size:12px;color:#b5bed0;margin-top:6px}
+    /* Fredoka font overrides */
+    body{font-family:'Fredoka', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; font-weight:500}
+    h1,.btn{font-weight:600}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>Doodles Viewer — Apri immagine per ID</h1>
+      <p class="muted">Inserisci l'ID del token e apri direttamente l'immagine su una nuova scheda.</p>
+
+      <label for="tokenId">ID</label>
+      <div class="row">
+        <input id="tokenId" type="number" inputmode="numeric" min="1" placeholder="es. 1451" />
+        <button id="go" class="btn">Apri immagine</button>
+      </div>
+      <div id="status" class="status"></div>
+      <div class="hint">By ARB8i</div>
+    </section>
+  </main>
+
+<script>
+// ===== Config & defaults =====
+const DEFAULT_CONTRACT = (new URLSearchParams(location.search).get('contract'))
+  || '0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e'; // Doodles mainnet
+
+const DEFAULT_RPC_LIST = [
+  'https://cloudflare-eth.com',
+  'https://eth.drpc.org',
+  'https://eth.llamarpc.com',
+  'https://rpc.ankr.com/eth',
+  'https://eth.public-rpc.com',
+];
+const DEFAULT_IPFS_GWS = [
+  'https://ipfs.io/ipfs/',
+  'https://cloudflare-ipfs.com/ipfs/',
+  'https://dweb.link/ipfs/',
+  'https://gateway.pinata.cloud/ipfs/',
+];
+
+const $ = sel => document.querySelector(sel);
+const statusEl = $('#status');
+function setStatus(msg){ statusEl.textContent = msg; }
+function setBusy(b){ $('#go').disabled = b; }
+
+// === Helpers ===
+function pad32hex(n){ const hex = BigInt(n).toString(16); return hex.padStart(64,'0'); }
+function decodeAbiString(hexdata){
+  if(!hexdata || !hexdata.startsWith('0x')) return null;
+  const h = hexdata.slice(2);
+  if(h.length < 128) return null;
+  const length = parseInt(h.slice(64,128),16);
+  const start = 128, end = start + length*2;
+  const s_hex = h.slice(start,end);
+  try{ const bytes = s_hex.match(/.{1,2}/g).map(hh=>parseInt(hh,16));
+       return new TextDecoder().decode(new Uint8Array(bytes)); }catch{ return null; }
+}
+async function rpcCall(method, params, rpcList){
+  const payload = { jsonrpc:'2.0', id:1, method, params };
+  const headers = { 'Content-Type':'application/json', 'Accept':'application/json' };
+  for(const url of rpcList){
+    try{ const res = await fetch(url, {method:'POST', headers, body: JSON.stringify(payload)});
+         if(!res.ok) continue; const data = await res.json(); if(data && !data.error) return data.result; }catch{}
+  }
+  return null;
+}
+function ipfsToUrls(uri, gws){
+  if(typeof uri !== 'string') return [];
+  if(uri.startsWith('ipfs://')){ const path = uri.replace('ipfs://',''); return gws.map(gw => gw + path); }
+  return [uri];
+}
+async function fetchJsonAny(urls){
+  for(const u of urls){
+    try{ const r = await fetch(u, { headers: { 'Accept':'application/json' } }); if(r.ok){ try{ return await r.json(); }catch{} } }catch{}
+  }
+  return null;
+}
+async function fetchBytesAny(urls){
+  for(const u of urls){
+    try{
+      const r = await fetch(u);
+      if(r.ok){
+        const ct = (r.headers.get('content-type')||'').toLowerCase();
+        const blob = await r.blob();
+        const buf = await blob.arrayBuffer();
+        let ext = '.png';
+        if(ct.includes('gif')) ext = '.gif';
+        else if(ct.includes('jpeg')||ct.includes('jpg')) ext = '.jpg';
+        else if(ct.includes('png')) ext = '.png';
+        else { const low = u.toLowerCase(); if(low.endsWith('.gif')) ext = '.gif'; else if(low.endsWith('.jpg')||low.endsWith('.jpeg')) ext = '.jpg'; else if(low.endsWith('.png')) ext = '.png'; }
+        let type = 'application/octet-stream';
+        if(ct) type = ct; else if(ext === '.png') type = 'image/png'; else if(ext === '.jpg') type = 'image/jpeg'; else if(ext === '.gif') type = 'image/gif';
+        return {buf, ext, type};
+      }
+    }catch{}
+  }
+  return null;
+}
+
+// --- iOS/PC safe new-tab open: pre-open a tab at user gesture and later set its URL ---
+let pendingWin = null;
+function preparePopup(){ try{ pendingWin = window.open('', '_blank'); }catch{ pendingWin = null; } }
+function openBlobInNewTab(blob){
+  const url = URL.createObjectURL(blob);
+  if(pendingWin && !pendingWin.closed){ pendingWin.location = url; pendingWin = null; }
+  else { const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.click(); }
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+
+async function fetchOne(tokenId, contract, rpcList, gws){
+  const selector = '0xc87b56dd'; // tokenURI(uint256)
+  const data = selector + pad32hex(tokenId);
+  const callObj = { to: contract, data };
+  const result = await rpcCall('eth_call', [callObj, 'latest'], rpcList);
+  if(!result) throw new Error('RPC non disponibile');
+  const tokenUri = decodeAbiString(result);
+  if(!tokenUri) throw new Error('Decodifica tokenURI fallita');
+  const meta = await fetchJsonAny(ipfsToUrls(tokenUri, gws));
+  if(!meta) throw new Error('Metadata non disponibili');
+  const imageUri = meta.image || meta.image_url || meta.imageIpfs;
+  let image = null, ext = '.png', type = 'application/octet-stream';
+  if(imageUri){ const r = await fetchBytesAny(ipfsToUrls(imageUri, gws)); if(r){ image = r.buf; ext = r.ext; type = r.type; } }
+  return { meta, image, ext, type };
+}
+
+async function openImage(){
+  setBusy(true); setStatus('Carico…');
+  const raw = $('#tokenId').value.trim();
+  const id = parseInt(raw, 10);
+  if(!Number.isFinite(id) || id < 1){ setStatus('Inserisci un ID valido (≥ 1).'); setBusy(false); return; }
+  preparePopup(); // pre-apri la scheda per iOS
+  try{
+    const {meta, image, ext, type} = await fetchOne(id, DEFAULT_CONTRACT, DEFAULT_RPC_LIST, DEFAULT_IPFS_GWS);
+    if(image){
+      const blob = new Blob([image], {type: type || (ext==='.png'?'image/png': ext==='.jpg'?'image/jpeg': ext==='.gif'?'image/gif':'application/octet-stream')});
+      openBlobInNewTab(blob);
+      setStatus('✅ Immagine aperta in una nuova scheda.');
+    } else {
+      // se non c'è immagine, scarica i metadata
+      const blob = new Blob([JSON.stringify(meta,null,2)], {type:'application/json'});
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${id}.json`; a.click(); URL.revokeObjectURL(a.href);
+      setStatus('⚠️ Nessuna immagine nei metadata: scaricato JSON.');
+    }
+  }catch(err){
+    setStatus('❌ Errore: ' + (err && err.message ? err.message : 'operazione fallita'));
+  } finally {
+    setBusy(false);
+  }
+}
+
+$('#go').addEventListener('click', openImage);
+$('#tokenId').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ openImage(); }});
+</script>
+</body>
+</html>
