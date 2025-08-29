@@ -151,7 +151,7 @@ async function openImage(){
   setBusy(true); setStatus('Carico…');
   const raw = $('#tokenId').value.trim();
   const id = parseInt(raw, 10);
-  if(!Number.isFinite(id) || id < 1){ setStatus('Inserisci un ID valido (≥ 1).'); setBusy(false); return; }
+  if(!Number.isFinite(id) || id < 0){ setStatus('Inserisci un ID valido (≥ 1).'); setBusy(false); return; }
   preparePopup(); // pre-apri la scheda per iOS
   try{
     const {meta, image, ext, type} = await fetchOne(id, DEFAULT_CONTRACT, DEFAULT_RPC_LIST, DEFAULT_IPFS_GWS);
